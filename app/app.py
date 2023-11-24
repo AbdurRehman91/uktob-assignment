@@ -1,7 +1,13 @@
 import os
+import tiktoken
 import requests
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
+from langchain.chat_models import ChatOpenAI
+#from langchain.chain.summerize import load_summarize_chain
+from langchain.docstore.document import Document
+from langchain.text_splitter import CharacterTextSplitter
+from langchain.prompts import PromptTemplate
 from .settings.config import DevelopmentConfig, ProductionConfig
 from .models.notes import db, Notes
 from flask_migrate import Migrate
@@ -35,7 +41,10 @@ def create_note():
 @app.route('/notes', methods=['GET'])
 def get_all_notes():
     notes = Notes.query.all()
-    notes_list = [{'id': note.id, 'title': note.title, 'content': note.content} for note in notes]
+    notes_list = [{'id': note.id, 'title': note.title, 
+                   'content': note.content,
+                    'is_active': note.is_active, 'created': note.created_at, 
+                    'updated':note.updated_at} for note in notes]
     return jsonify({'notes': notes_list})
 
 # API Endpoint for getting a specific note by ID
@@ -44,7 +53,9 @@ def get_note(note_id):
     try:
         note = Notes.query.get(note_id)
         if note:
-            return jsonify({'id': note.id, 'title': note.title, 'content': note.content})
+            return jsonify({'id': note.id, 'title': note.title, 
+                            'content': note.content, 'is_active': note.is_active, 
+                            'created': note.created_at, 'updated':note.updated_at})
         return jsonify({'error': 'Note not found'}), 404
     except Exception as e:
 
@@ -56,7 +67,7 @@ def delete_note(note_id):
     try:
         note = Notes.query.get(note_id)
         if note:
-            db.session.delete(note)
+            note.is_active = False
             db.session.commit()
             return jsonify({'message': 'Note deleted successfully'})
         else:
@@ -64,29 +75,49 @@ def delete_note(note_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+# API Endpoint for updating a note by ID
+@app.route('/notes/<int:note_id>', methods=['PUT'])
+def update_note(note_id):
+    try:
+        note = Notes.query.get(note_id)
+        if note:
+            data = request.get_json()
+            if 'title' not in data or 'content' not in data:
+                return jsonify({'error': 'Title and content are required'}), 400
+            note.title = data['title']
+            note.content = data['content']
+            db.session.commit()
+            return jsonify({'message': 'Note updated successfully'})
+        else:
+            return jsonify({'error': 'Note not found'}), 404
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 # API Endpoint for LangChain integration (Note Summarization)
 @app.route('/notes/<int:note_id>/summarize', methods=['GET'])
 def summarize_note(note_id):
-    note = Notes.query.get_or_404(note_id)
-    langchain_api_url = 'https://api.openai.com/v1/langchain/summarize'
-    langchain_api_key = 'YOUR_LANGCHAIN_API_KEY'  # Replace with your actual LangChain API key
-
-    headers = {
-        'Authorization': f'Bearer {langchain_api_key}',
-        'Content-Type': 'application/json',
-    }
-
-    data = {
-        'text': note.content,
-    }
-
-    response = requests.post(langchain_api_url, json=data, headers=headers)
-
-    if response.status_code == 200:
-        summary = response.json()['summary']
-        return jsonify({'summary': summary})
-    else:
-        return jsonify({'error': 'Failed to generate summary'}), 500
+    try:
+        model = os.environ.get("MODEL_NAME")
+        note = Notes.query.get(note_id)
+        if note:
+            text_splitter = CharacterTextSplitter.from_tiktoken_encoder(model_name=model)
+            texts = text_splitter.split_text(note.content)
+            docs = [Document(page_content=t) for t in texts]
+            llm = ChatOpenAI(temperature=0, openai_api_key=os.environ.get("OPENAI_API_KEY"), 
+                             model_name=model)
+            encoding = tiktoken.encoding_for_model(model)
+            num_tokens = len(encoding.encode(note.content))
+            prompt_template = """Write a concise summary of the following:
+            {text}:"""
+            prompt = PromptTemplate(template=prompt_template, input_variables=["text"])
+            chain = load_summarize_chain(llm, chain_type="stuff", prompt=prompt, verbose=True)
+            summary = chain.run(docs)
+            return jsonify({'message': summary})
+        else:
+            return jsonify({'error': 'Note not found'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     app.run(debug=True)
