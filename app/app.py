@@ -1,6 +1,4 @@
 import os
-import tiktoken
-import requests
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from langchain.chat_models import ChatOpenAI
@@ -40,7 +38,7 @@ def create_note():
 # API Endpoint for getting all notes
 @app.route('/notes', methods=['GET'])
 def get_all_notes():
-    notes = Notes.query.all()
+    notes = Notes.query.filter_by(is_active=True).all()
     notes_list = [{'id': note.id, 'title': note.title, 
                    'content': note.content,
                     'is_active': note.is_active, 'created': note.created_at, 
@@ -106,8 +104,6 @@ def summarize_note(note_id):
             docs = [Document(page_content=t) for t in texts]
             llm = ChatOpenAI(temperature=0, openai_api_key=os.environ.get("OPENAI_API_KEY"), 
                              model_name=model)
-            encoding = tiktoken.encoding_for_model(model)
-            num_tokens = len(encoding.encode(note.content))
             prompt_template = """Write a concise summary of the following:
             {text}:"""
             prompt = PromptTemplate(template=prompt_template, input_variables=["text"])
